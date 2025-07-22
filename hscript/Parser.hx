@@ -31,6 +31,7 @@ enum Token {
 	TPClose;
 	TBrOpen;
 	TBrClose;
+	TApostrophe;
 	TDot;
 	TQuestionDot;
 	TComma;
@@ -426,6 +427,128 @@ class Parser {
 				push(tk);
 			}
 			return mk(EBlock(a),p1);
+		case TApostrophe:
+			// readString
+			var a = new Array<Expr>();
+
+			var c = 0;
+			var b = new StringBuf();
+			var esc = false;
+			var old = line;
+			var s = input;
+			#if hscriptPos
+			var p1 = currentPos - 1;
+			#end
+
+			while( true ) {
+				var c = readChar();
+				if( StringTools.isEof(c) ) {
+					line = old;
+					error(EUnterminatedString, p1, p1);
+					break;
+				}
+				if( esc ) {
+					esc = false;
+					switch( c ) {
+					case 'n'.code: b.addChar('\n'.code);
+					case 'r'.code: b.addChar('\r'.code);
+					case 't'.code: b.addChar('\t'.code);
+					case "'".code, '"'.code, '\\'.code: b.addChar(c);
+					case '/'.code: if( allowJSON ) b.addChar(c) else invalidChar(c);
+					case "u".code:
+						if( !allowJSON ) invalidChar(c);
+						var k = 0;
+						for( i in 0...4 ) {
+							k <<= 4;
+							var char = readChar();
+							switch( char ) {
+							case 48,49,50,51,52,53,54,55,56,57: // 0-9
+								k += char - 48;
+							case 65,66,67,68,69,70: // A-F
+								k += char - 55;
+							case 97,98,99,100,101,102: // a-f
+								k += char - 87;
+							default:
+								if( StringTools.isEof(char) ) {
+									line = old;
+									error(EUnterminatedString, p1, p1);
+								}
+								invalidChar(char);
+							}
+						}
+						b.addChar(k);
+					default: invalidChar(c);
+					}
+				} else if( c == 92 )
+					esc = true;
+				else if ( c == "'".code ) {
+					break;
+				} else if( c == "$".code ) {
+					var c2 = readChar();
+					var sowy:Bool = switch(c2) {
+						case 48,49,50,51,52,53,54,55,56,57: true; // 0...9
+						case "{".code: readPos--; false;
+						default: readPos--; !idents[c2];
+					}
+
+					if (sowy) {
+						(c2 == "$".code) ? readPos++ : b.addChar(c);
+						if (c2 != "'".code) { // scary
+							if( c2 == 10 ) line++;
+							b.addChar(c2);
+						}
+					}else {
+						if (b.length > 0) {
+							a.push( mk( EConst( CString(b.toString()) ), p1) );
+							b = new StringBuf();
+						}
+						
+						this.char = -1;
+						var t = token();
+						readPos--;
+						
+						switch(t) {
+							case TId(s):
+								a.push(mk(EIdent(s), p1));
+							
+							case TBrOpen:
+								readPos++;
+								a.push(parseExpr());
+								ensure(TBrClose);
+							
+							case TApostrophe: 
+								break;
+							case TEof: 
+								unexpected(t);
+							
+							default:
+						}
+					}
+					
+				}else {
+					if( c == 10 ) line++;
+					b.addChar(c);
+				}
+			}
+
+			this.char = -1;
+			if (b.length > 0) {
+				a.push( mk( EConst( CString(b.toString()) ), p1) );
+				b = new StringBuf();
+			}
+
+			var e = switch(a.length) {
+				case 0: mk(EConst(CString('')), p1);
+				case 1: mk(expr(a.pop()), p1);
+				default:
+					while (a.length > 1) {
+						var e2 = a.pop(); var e1 = a.pop();
+						a[a.length] = makeBinop("+", e1, e2);
+					}
+					a.pop();
+			}
+			return parseExprNext(e);
+
 		case TOp(op):
 			if( op == "-" ) {
 				var start = tokenMin;
@@ -1503,7 +1626,8 @@ class Parser {
 			case "}".code: return TBrClose;
 			case "[".code: return TBkOpen;
 			case "]".code: return TBkClose;
-			case "'".code, '"'.code: return TConst( CString(readString(char)) );
+			case '"'.code: return TConst( CString(readString(char)) );
+			case "'".code: return TApostrophe;
 			case "?".code:
 				char = readChar();
 				if( char == ".".code )
@@ -1733,6 +1857,7 @@ class Parser {
 		case TPClose: ")";
 		case TBrOpen: "{";
 		case TBrClose: "}";
+		case TApostrophe: "'";
 		case TDot: ".";
 		case TQuestionDot: "?.";
 		case TComma: ",";
